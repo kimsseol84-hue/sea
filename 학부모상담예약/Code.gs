@@ -1,19 +1,21 @@
 /**
  * 학부모 상담 예약 웹앱 (Google Apps Script + 구글 시트)
  *
- * 시트 구성
- *  - 설정     : 제목, 반 이름, 담임, 상담 시간, 안내 문구, 관리자 코드 등
- *  - 일정     : 날짜 한 줄 + 시간 목록(쉼표로 구분)
+ * 원 전체가 시트 하나, 링크 하나로 함께 씁니다.
+ *  - 설정     : 페이지 제목, 안내 문구, 신청 받기, 명단 확인, 전체 관리자 코드
+ *  - 반       : 반 이름 | 담임 | 상담 시간(분) | 반 관리자 코드
+ *  - 일정     : 반 | 날짜 | 시간(쉼표로 구분)
+ *  - 명단     : 반 | 아이 이름   (명단에 있는 아이만 신청 가능)
  *  - 예약현황 : 신청 내역 (관리자만 보는 곳)
  *  - 보관     : 지난 상담 기간의 예약 (메뉴 > 지난 예약 보관하기)
  *
- * 공동 담임·원장님이 설정을 바꾸게 하려면 이 스프레드시트를 "편집자"로 공유하세요.
- * 학부모에게는 웹앱 링크만 보냅니다. 학부모는 이름을 볼 수 없습니다.
+ * 선생님들은 이 스프레드시트를 "편집자"로 공유받아 자기 반 줄을 고칩니다.
+ * 학부모에게는 웹앱 링크만 보냅니다. 학부모는 다른 사람 이름을 볼 수 없습니다.
  */
 
-var SHEET = { CONFIG: '설정', SLOTS: '일정', BOOK: '예약현황', ARCHIVE: '보관' };
-var BOOK_HEADERS = ['접수시각', '날짜', '시간', '아이 이름', '보호자', '연락처', '요청사항', '확인번호', '상태'];
-var COL = { created: 0, date: 1, time: 2, child: 3, guardian: 4, phone: 5, memo: 6, code: 7, status: 8 };
+var SHEET = { CONFIG: '설정', CLASSES: '반', SLOTS: '일정', ROSTER: '명단', BOOK: '예약현황', ARCHIVE: '보관' };
+var BOOK_HEADERS = ['접수시각', '반', '날짜', '시간', '아이 이름', '보호자', '연락처', '요청사항', '확인번호', '상태'];
+var COL = { created: 0, cls: 1, date: 2, time: 3, child: 4, guardian: 5, phone: 6, memo: 7, code: 8, status: 9 };
 var ACTIVE = '예약';
 var CANCELLED = '취소';
 var WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
@@ -31,42 +33,60 @@ function onOpen() {
 function setup() {
   var ss = SpreadsheetApp.getActive();
   ss.setSpreadsheetTimeZone('Asia/Seoul');
+  var tz = ss.getSpreadsheetTimeZone();
 
   if (!ss.getSheetByName(SHEET.CONFIG)) {
-    var c = ss.insertSheet(SHEET.CONFIG, 0);
-    var adminCode = String(Math.floor(100000 + Math.random() * 900000));
     var rows = [
       ['항목', '값', '설명'],
       ['제목', '2학기 학부모 상담 신청', '페이지 맨 위에 보이는 제목'],
-      ['반 이름', '햇살반', ''],
-      ['담임', '', '예: 김OO 선생님'],
-      ['상담 시간(분)', 20, '한 번 상담에 걸리는 시간'],
-      ['안내 문구', '원하시는 날짜와 시간을 골라 주세요. 한 아이당 한 번 신청할 수 있어요.', ''],
+      ['안내 문구', '반을 고른 뒤 원하시는 날짜와 시간을 골라 주세요. 한 아이당 한 번 신청할 수 있어요.', ''],
+      ['예약 받기', '예', '"아니오"로 바꾸면 모든 반의 신청이 멈춥니다'],
+      ['명단 확인', '예', '"예"이면 "명단" 시트에 있는 아이 이름으로만 신청할 수 있어요 (그 반 명단이 비어 있으면 확인하지 않음)'],
       ['연락처 받기', '아니오', '예 / 아니오 — 꼭 필요할 때만 "예"로 바꾸세요'],
-      ['예약 받기', '예', '"아니오"로 바꾸면 신청이 멈춥니다'],
-      ['관리자 코드', adminCode, '웹앱 맨 아래 "관리자"에서 신청자 명단을 볼 때 입력. 학부모에게 알려주지 마세요']
+      ['전체 관리자 코드', randomDigits_(6), '모든 반의 명단을 볼 수 있는 코드. 원장님·행정 담당만 아세요']
     ];
-    c.getRange(1, 1, rows.length, 3).setValues(rows);
-    c.getRange('B9').setNumberFormat('@').setValue(adminCode);
-    c.getRange('A1:C1').setFontWeight('bold');
-    c.setColumnWidth(1, 120); c.setColumnWidth(2, 360); c.setColumnWidth(3, 380);
-    c.setFrozenRows(1);
+    var c = ss.insertSheet(SHEET.CONFIG, 0);
+    c.getRange(1, 1, rows.length, 3).setNumberFormat('@').setValues(rows);
+    styleHeader_(c, 3, [130, 380, 420]);
   }
 
-  if (!ss.getSheetByName(SHEET.SLOTS)) {
-    var s = ss.insertSheet(SHEET.SLOTS, 1);
-    var tz = ss.getSpreadsheetTimeZone();
-    var sample = [['날짜', '시간 (쉼표로 구분)']];
+  if (!ss.getSheetByName(SHEET.CLASSES)) {
+    var cl = ss.insertSheet(SHEET.CLASSES, 1);
+    cl.getRange(1, 1, 3, 4).setNumberFormat('@').setValues([
+      ['반 이름', '담임', '상담 시간(분)', '반 관리자 코드'],
+      ['햇살반', '김OO 선생님', '20', randomDigits_(6)],
+      ['꽃잎반', '이OO 선생님', '20', randomDigits_(6)]
+    ]);
+    styleHeader_(cl, 4, [120, 160, 110, 140]);
+  }
+
+  var slots = ss.getSheetByName(SHEET.SLOTS);
+  if (!slots) {
+    slots = ss.insertSheet(SHEET.SLOTS, 2);
+    var sample = [['반', '날짜', '시간 (쉼표로 구분)']];
     var d = new Date();
-    while (sample.length < 4) {
+    var made = 0;
+    while (made < 3) {
       d.setDate(d.getDate() + 1);
-      var dow = Number(Utilities.formatDate(d, tz, 'u')); // 1=월 … 7=일
-      if (dow <= 5) sample.push([Utilities.formatDate(d, tz, 'yyyy-MM-dd'), '14:00, 14:30, 15:00, 15:30']);
+      if (Number(Utilities.formatDate(d, tz, 'u')) > 5) continue; // 주말 건너뜀
+      var day = Utilities.formatDate(d, tz, 'yyyy-MM-dd');
+      sample.push(['햇살반', day, '14:00, 14:30, 15:00, 15:30']);
+      sample.push(['꽃잎반', day, '16:00, 16:30']);
+      made++;
     }
-    s.getRange(1, 1, sample.length, 2).setNumberFormat('@').setValues(sample);
-    s.getRange('A1:B1').setFontWeight('bold');
-    s.setColumnWidth(1, 140); s.setColumnWidth(2, 360);
-    s.setFrozenRows(1);
+    slots.getRange(1, 1, sample.length, 3).setNumberFormat('@').setValues(sample);
+    styleHeader_(slots, 3, [120, 130, 360]);
+  } else if (String(slots.getRange(1, 1).getValue()).trim() === '날짜') {
+    // 이전 버전(반 열 없음)에서 넘어온 경우
+    slots.insertColumnBefore(1);
+    slots.getRange(1, 1).setValue('반').setFontWeight('bold');
+  }
+
+  if (!ss.getSheetByName(SHEET.ROSTER)) {
+    var r = ss.insertSheet(SHEET.ROSTER, 3);
+    r.getRange(1, 1, 1, 2).setValues([['반', '아이 이름']]);
+    styleHeader_(r, 2, [120, 160]);
+    r.getRange('A2').setNote('예: 햇살반 | 김하늘\n한 줄에 한 명씩. 비워 두면 그 반은 이름 확인 없이 신청을 받아요.');
   }
 
   ensureBookSheet_(ss);
@@ -76,22 +96,29 @@ function setup() {
     a.getRange(1, 1, 1, BOOK_HEADERS.length + 1).setFontWeight('bold');
   }
 
-  var first = ss.getSheets()[ss.getSheets().length - 1];
-  if (first.getName() === 'Sheet1' || first.getName() === '시트1') {
-    if (first.getLastRow() === 0) ss.deleteSheet(first);
-  }
-  SpreadsheetApp.getUi().alert('설정 완료! "설정"과 "일정" 시트를 반에 맞게 고친 뒤 웹앱으로 배포하세요.');
+  ss.getSheets().forEach(function (s) {
+    if (/^(Sheet1|시트1)$/.test(s.getName()) && s.getLastRow() === 0 && ss.getSheets().length > 1) ss.deleteSheet(s);
+  });
+  SpreadsheetApp.getUi().alert('설정 완료! "반", "일정", "명단" 시트를 원에 맞게 고친 뒤 웹앱으로 배포하세요.');
+}
+
+function styleHeader_(sheet, cols, widths) {
+  sheet.getRange(1, 1, 1, cols).setFontWeight('bold');
+  sheet.setFrozenRows(1);
+  widths.forEach(function (w, i) { sheet.setColumnWidth(i + 1, w); });
 }
 
 function ensureBookSheet_(ss) {
   var b = ss.getSheetByName(SHEET.BOOK);
   if (!b) {
-    b = ss.insertSheet(SHEET.BOOK, 2);
+    b = ss.insertSheet(SHEET.BOOK, 4);
     b.appendRow(BOOK_HEADERS);
     b.getRange(1, 1, 1, BOOK_HEADERS.length).setFontWeight('bold');
-    b.getRange('B:C').setNumberFormat('@');
-    b.getRange('H:H').setNumberFormat('@');
     b.setFrozenRows(1);
+  } else if (String(b.getRange(1, 2).getValue()).trim() === '날짜') {
+    // 이전 버전(반 열 없음)에서 넘어온 경우
+    b.insertColumnBefore(2);
+    b.getRange(1, 2).setValue('반').setFontWeight('bold');
   }
   return b;
 }
@@ -130,22 +157,24 @@ function doGet() {
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
-/** 학부모 화면에 필요한 공개 정보. 이름·관리자 코드는 절대 포함하지 않는다. */
+/** 학부모 화면에 필요한 공개 정보. 아이 이름·관리자 코드는 절대 포함하지 않는다. */
 function getPublicData() {
   var cfg = readConfig_();
+  var classes = readClasses_();
+  var days = buildDays_(classes, activeBookings_(classes));
   return {
     title: cfg.title,
-    className: cfg.className,
-    teacher: cfg.teacher,
-    minutes: cfg.minutes,
     notice: cfg.notice,
     askPhone: cfg.askPhone,
     open: cfg.open,
-    days: buildDays_(cfg, activeBookings_())
+    classes: classes.map(function (c) {
+      return { name: c.name, teacher: c.teacher, minutes: c.minutes, days: days[c.name] || [] };
+    })
   };
 }
 
 function book(form) {
+  var cls = cleanText_(form && form.cls, 30);
   var child = cleanText_(form && form.child, 20);
   var guardian = cleanText_(form && form.guardian, 20);
   var phone = cleanText_(form && form.phone, 20);
@@ -162,33 +191,44 @@ function book(form) {
     if (!cfg.open) throw new Error('지금은 신청을 받지 않고 있어요.');
     if (cfg.askPhone && !phone) throw new Error('연락처를 적어 주세요.');
 
-    var bookings = activeBookings_();
-    var days = buildDays_(cfg, bookings);
-    var slot = null;
-    days.forEach(function (d) {
-      if (d.date !== date) return;
-      d.times.forEach(function (t) { if (t.time === time) slot = { day: d, t: t }; });
-    });
+    var classes = readClasses_();
+    var klass = classes.filter(function (c) { return c.name === cls; })[0];
+    if (!klass) throw new Error('반을 다시 골라 주세요. 화면을 새로고침하면 최신 반 목록이 보여요.');
+
+    if (cfg.checkRoster) {
+      var roster = readRoster_(classes)[cls];
+      if (roster) {
+        var canonical = roster[nameKey_(child)];
+        if (!canonical) {
+          Utilities.sleep(800);
+          throw new Error(cls + ' 명단에서 "' + child + '" 이름을 찾지 못했어요. 아이 이름을 정확히 적어 주세요. 계속 안 되면 담임 선생님께 알려 주세요.');
+        }
+        child = canonical;
+      }
+    }
+
+    var bookings = activeBookings_(classes);
+    var day = (buildDays_(classes, bookings)[cls] || []).filter(function (d) { return d.date === date; })[0];
+    var slot = day && day.times.filter(function (t) { return t.time === time; })[0];
     if (!slot) throw new Error('선택한 시간이 더 이상 없어요. 화면을 새로고침해 주세요.');
-    if (slot.t.taken) throw new Error('방금 다른 분이 이 시간을 신청했어요. 다른 시간을 골라 주세요.');
+    if (slot.taken) throw new Error('방금 다른 분이 이 시간을 신청했어요. 다른 시간을 골라 주세요.');
 
     var key = nameKey_(child);
-    var mine = bookings.filter(function (b) { return nameKey_(b.child) === key; })[0];
+    var mine = bookings.filter(function (b) { return b.cls === cls && nameKey_(b.child) === key; })[0];
     if (mine) {
       throw new Error(child + ' 이름으로 이미 ' + dayLabel_(mine.date) + ' ' + mine.time +
         ' 예약이 있어요. 바꾸려면 아래 "내 예약 확인·취소"에서 먼저 취소해 주세요.');
     }
 
-    var code = String(Math.floor(1000 + Math.random() * 9000));
+    var code = randomDigits_(4);
     var sheet = ensureBookSheet_(SpreadsheetApp.getActive());
-    var row = [new Date(), date, time, safeCell_(child), safeCell_(guardian), safeCell_(phone), safeCell_(memo), code, ACTIVE];
+    var row = [new Date(), cls, date, time, safeCell_(child), safeCell_(guardian), safeCell_(phone), safeCell_(memo), code, ACTIVE];
     var r = sheet.getLastRow() + 1;
-    sheet.getRange(r, 2, 1, 2).setNumberFormat('@');
-    sheet.getRange(r, 8).setNumberFormat('@');
+    sheet.getRange(r, 2, 1, BOOK_HEADERS.length - 1).setNumberFormat('@');
     sheet.getRange(r, 1, 1, row.length).setValues([row]);
     SpreadsheetApp.flush();
 
-    return { date: date, time: time, label: dayLabel_(date), code: code, child: child };
+    return { cls: cls, date: date, time: time, label: dayLabel_(date), code: code, child: child };
   } finally {
     lock.releaseLock();
   }
@@ -196,7 +236,7 @@ function book(form) {
 
 function findMyBooking(child, code) {
   var b = matchBooking_(child, code);
-  return { date: b.date, time: b.time, label: dayLabel_(b.date), child: b.child };
+  return { cls: b.cls, date: b.date, time: b.time, label: dayLabel_(b.date), child: b.child };
 }
 
 function cancelMyBooking(child, code) {
@@ -212,46 +252,116 @@ function cancelMyBooking(child, code) {
   }
 }
 
-/** 관리자 화면: 코드가 맞을 때만 이름이 담긴 명단을 돌려준다. */
+/**
+ * 관리자 화면. 전체 관리자 코드면 모든 반, 반 관리자 코드면 그 반만 돌려준다.
+ */
 function getAdminData(adminCode) {
   var cfg = readConfig_();
-  if (!cfg.adminCode || String(adminCode || '').trim() !== cfg.adminCode) {
+  var classes = readClasses_();
+  var code = String(adminCode || '').trim();
+  var scope = null;
+  if (code && code === cfg.adminCode) scope = '*';
+  else if (code) classes.forEach(function (c) { if (c.code && c.code === code) scope = c.name; });
+  if (!scope) {
     Utilities.sleep(800); // 무작위 대입을 느리게
     throw new Error('관리자 코드가 맞지 않아요.');
   }
-  var list = activeBookings_()
-    .sort(function (a, b) { return (a.date + a.time).localeCompare(b.date + b.time); })
+
+  var inScope = function (name) { return scope === '*' || name === scope; };
+  var list = activeBookings_(classes)
+    .filter(function (b) { return inScope(b.cls); })
+    .sort(function (a, b) { return (a.date + a.time + a.cls).localeCompare(b.date + b.time + b.cls); })
     .map(function (b) {
-      return { label: dayLabel_(b.date), time: b.time, child: b.child, guardian: b.guardian, phone: b.phone, memo: b.memo };
+      return { cls: b.cls, label: dayLabel_(b.date), time: b.time, child: b.child, guardian: b.guardian, phone: b.phone, memo: b.memo };
     });
+
+  var days = buildDays_(classes, []);
   var total = 0;
-  buildDays_(cfg, []).forEach(function (d) { total += d.times.length; });
-  return { list: list, upcomingSlots: total, sheetUrl: SpreadsheetApp.getActive().getUrl() };
+  Object.keys(days).forEach(function (name) {
+    if (inScope(name)) days[name].forEach(function (d) { total += d.times.length; });
+  });
+
+  // 명단은 있는데 아직 신청하지 않은 아이 (담임이 따로 연락할 때 쓰기)
+  var missing = [];
+  var roster = readRoster_(classes);
+  Object.keys(roster).forEach(function (name) {
+    if (!inScope(name)) return;
+    var booked = {};
+    list.forEach(function (b) { if (b.cls === name) booked[nameKey_(b.child)] = true; });
+    Object.keys(roster[name]).forEach(function (k) {
+      if (!booked[k]) missing.push({ cls: name, child: roster[name][k] });
+    });
+  });
+
+  return { scope: scope === '*' ? '전체 반' : scope, list: list, slots: total, missing: missing };
 }
 
 /* ───────── 내부 함수 ───────── */
 
 function tz_() { return SpreadsheetApp.getActive().getSpreadsheetTimeZone() || 'Asia/Seoul'; }
 
+function randomDigits_(n) {
+  var s = '';
+  for (var i = 0; i < n; i++) s += Math.floor(Math.random() * 10);
+  return s.charAt(0) === '0' ? '1' + s.slice(1) : s;
+}
+
+function sheetRows_(name, cols) {
+  var sh = SpreadsheetApp.getActive().getSheetByName(name);
+  if (!sh || sh.getLastRow() < 2) return [];
+  return sh.getRange(2, 1, sh.getLastRow() - 1, cols).getValues();
+}
+
 function readConfig_() {
-  var sh = SpreadsheetApp.getActive().getSheetByName(SHEET.CONFIG);
   var map = {};
-  if (sh && sh.getLastRow() > 1) {
-    sh.getRange(2, 1, sh.getLastRow() - 1, 2).getValues().forEach(function (r) {
-      map[String(r[0]).trim()] = r[1];
-    });
-  }
+  sheetRows_(SHEET.CONFIG, 2).forEach(function (r) { map[String(r[0]).trim()] = r[1]; });
   var yes = function (v) { return /^(예|네|y|yes|o|true)$/i.test(String(v).trim()); };
   return {
     title: String(map['제목'] || '학부모 상담 신청'),
-    className: String(map['반 이름'] || ''),
-    teacher: String(map['담임'] || ''),
-    minutes: Number(map['상담 시간(분)']) || 0,
     notice: String(map['안내 문구'] || ''),
     askPhone: yes(map['연락처 받기']),
     open: map['예약 받기'] === undefined ? true : yes(map['예약 받기']),
-    adminCode: String(map['관리자 코드'] || '').trim()
+    checkRoster: map['명단 확인'] === undefined ? true : yes(map['명단 확인']),
+    adminCode: String(map['전체 관리자 코드'] || map['관리자 코드'] || '').trim()
   };
+}
+
+function readClasses_() {
+  var seen = {};
+  return sheetRows_(SHEET.CLASSES, 4).map(function (r) {
+    return {
+      name: String(r[0]).trim(),
+      teacher: String(r[1]).trim(),
+      minutes: Number(r[2]) || 0,
+      code: String(r[3]).trim()
+    };
+  }).filter(function (c) {
+    if (!c.name || seen[c.name]) return false;
+    seen[c.name] = true;
+    return true;
+  });
+}
+
+/** 반 칸이 비어 있어도 반이 하나뿐이면 그 반으로 본다. */
+function resolveClass_(raw, classes) {
+  var name = String(raw == null ? '' : raw).trim();
+  if (!name && classes.length === 1) return classes[0].name;
+  return name;
+}
+
+/** { 반 이름: { 이름키: 명단에 적힌 이름 } } — 명단이 빈 반은 키가 없다. */
+function readRoster_(classes) {
+  var out = {};
+  var known = {};
+  classes.forEach(function (c) { known[c.name] = true; });
+  sheetRows_(SHEET.ROSTER, 2).forEach(function (r) {
+    var cls = resolveClass_(r[0], classes);
+    var name = String(r[1]).trim();
+    if (!known[cls] || !name) return;
+    out[cls] = out[cls] || {};
+    out[cls][nameKey_(name)] = name;
+  });
+  return out;
 }
 
 function normDate_(v) {
@@ -274,62 +384,73 @@ function dayLabel_(date) {
   return p[1] + '월 ' + p[2] + '일 (' + WEEKDAYS[dow] + ')';
 }
 
-function buildDays_(cfg, bookings) {
-  var sh = SpreadsheetApp.getActive().getSheetByName(SHEET.SLOTS);
-  if (!sh || sh.getLastRow() < 2) return [];
+/** { 반 이름: [{date, label, left, times:[{time, taken}]}] } — 지난 시간은 뺀다. */
+function buildDays_(classes, bookings) {
   var now = Utilities.formatDate(new Date(), tz_(), 'yyyy-MM-dd HH:mm');
+  var known = {};
+  classes.forEach(function (c) { known[c.name] = true; });
   var taken = {};
-  bookings.forEach(function (b) { taken[b.date + ' ' + b.time] = true; });
+  bookings.forEach(function (b) { taken[b.cls + '|' + b.date + ' ' + b.time] = true; });
 
-  var byDate = {};
-  sh.getRange(2, 1, sh.getLastRow() - 1, 2).getValues().forEach(function (r) {
-    var date = normDate_(r[0]);
-    if (!date) return;
-    var raw = r[1] instanceof Date ? [r[1]] : String(r[1]).split(/[,，\n]/);
+  var grid = {};
+  sheetRows_(SHEET.SLOTS, 3).forEach(function (r) {
+    var cls = resolveClass_(r[0], classes);
+    var date = normDate_(r[1]);
+    if (!known[cls] || !date) return;
+    var raw = r[2] instanceof Date ? [r[2]] : String(r[2]).split(/[,，\n]/);
     raw.forEach(function (t) {
       var time = normTime_(t);
       if (!time || date + ' ' + time <= now) return;
-      byDate[date] = byDate[date] || {};
-      byDate[date][time] = true;
+      grid[cls] = grid[cls] || {};
+      grid[cls][date] = grid[cls][date] || {};
+      grid[cls][date][time] = true;
     });
   });
 
-  return Object.keys(byDate).sort().map(function (date) {
-    var times = Object.keys(byDate[date]).sort().map(function (time) {
-      return { time: time, taken: !!taken[date + ' ' + time] };
+  var out = {};
+  Object.keys(grid).forEach(function (cls) {
+    out[cls] = Object.keys(grid[cls]).sort().map(function (date) {
+      var times = Object.keys(grid[cls][date]).sort().map(function (time) {
+        return { time: time, taken: !!taken[cls + '|' + date + ' ' + time] };
+      });
+      var left = times.filter(function (t) { return !t.taken; }).length;
+      return { date: date, label: dayLabel_(date), times: times, left: left };
     });
-    var left = times.filter(function (t) { return !t.taken; }).length;
-    return { date: date, label: dayLabel_(date), times: times, left: left };
   });
+  return out;
 }
 
-function readBookRows_() {
+function readBookRows_(classes) {
   var sh = ensureBookSheet_(SpreadsheetApp.getActive());
   if (sh.getLastRow() < 2) return [];
+  var strip = function (v) { return String(v).replace(/^'/, ''); };
   return sh.getRange(2, 1, sh.getLastRow() - 1, BOOK_HEADERS.length).getValues().map(function (r, i) {
     return {
       row: i + 2,
+      cls: resolveClass_(r[COL.cls], classes),
       date: normDate_(r[COL.date]),
       time: normTime_(r[COL.time]),
-      child: String(r[COL.child]).replace(/^'/, ''),
-      guardian: String(r[COL.guardian]).replace(/^'/, ''),
-      phone: String(r[COL.phone]).replace(/^'/, ''),
-      memo: String(r[COL.memo]).replace(/^'/, ''),
+      child: strip(r[COL.child]),
+      guardian: strip(r[COL.guardian]),
+      phone: strip(r[COL.phone]),
+      memo: strip(r[COL.memo]),
       code: String(r[COL.code]).trim(),
       status: String(r[COL.status]).trim()
     };
   });
 }
 
-function activeBookings_() {
-  return readBookRows_().filter(function (b) { return b.status === ACTIVE && b.date && b.time; });
+function activeBookings_(classes) {
+  return readBookRows_(classes).filter(function (b) { return b.status === ACTIVE && b.date && b.time; });
 }
 
 function matchBooking_(child, code) {
   var key = nameKey_(cleanText_(child, 20));
   var c = String(code || '').trim();
   if (!key || !c) throw new Error('아이 이름과 확인번호를 모두 적어 주세요.');
-  var found = activeBookings_().filter(function (b) { return nameKey_(b.child) === key && b.code === c; })[0];
+  var found = activeBookings_(readClasses_()).filter(function (b) {
+    return nameKey_(b.child) === key && b.code === c;
+  })[0];
   if (!found) {
     Utilities.sleep(800);
     throw new Error('일치하는 예약이 없어요. 이름과 확인번호 4자리를 다시 확인해 주세요.');

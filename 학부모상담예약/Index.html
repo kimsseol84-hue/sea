@@ -6,7 +6,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gowun+Dodum&family=Noto+Sans+KR:wght@400;500;700&display=swap">
 <style>
-  /* 레이아웃: 한 줄 세로 흐름 — 날짜 칩 → 시간 격자 → 신청서 → 확인/취소 → 관리자 */
+  /* 레이아웃: 한 줄 세로 흐름 — 반 → 날짜 칩 → 시간 격자 → 신청서 → 확인/취소 → 관리자 */
   :root {
     --bg: #f3f6f4;
     --paper: #ffffff;
@@ -33,6 +33,7 @@
     }
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.6 var(--font-body); }
   .wrap { max-width: 560px; margin: 0 auto; padding-inline: 16px; padding-block: 28px 48px; display: grid; gap: 22px; }
   h1, h2 { font-family: var(--font-display); font-weight: 400; text-wrap: balance; margin: 0; }
@@ -43,6 +44,12 @@
   .notice { margin: 10px 0 0; white-space: pre-line; }
   .panel { background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 18px; display: grid; gap: 14px; }
   .step { font-size: .8rem; color: var(--muted); letter-spacing: .04em; }
+  .classes { display: flex; flex-wrap: wrap; gap: 8px; }
+  .cls { font: 500 .95rem var(--font-body); border: 1px solid var(--line); background: var(--paper); color: var(--ink); border-radius: 999px; padding: 7px 16px; cursor: pointer; }
+  .cls[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .cls-meta { color: var(--muted); font-size: .88rem; margin: -4px 0 0; }
+  .missing { display: flex; flex-wrap: wrap; gap: 6px; }
+  .missing span { font-size: .85rem; background: var(--taken); border-radius: 999px; padding: 2px 10px; }
   .days { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin; }
   .day { flex: 0 0 auto; text-align: left; border: 1px solid var(--line); background: var(--paper); color: var(--ink); border-radius: 10px; padding: 8px 12px; font: inherit; cursor: pointer; min-width: 112px; }
   .day small { display: block; color: var(--muted); font-size: .78rem; }
@@ -89,7 +96,7 @@
 <body>
 <main class="wrap">
   <header>
-    <span class="eyebrow" id="className" hidden></span>
+    <span class="eyebrow">학부모 상담</span>
     <h1 id="title">학부모 상담 신청</h1>
     <p class="meta" id="meta">일정을 불러오는 중이에요…</p>
     <p class="notice" id="notice" hidden></p>
@@ -98,11 +105,14 @@
   <div class="msg err" id="closed" hidden>지금은 상담 신청을 받지 않고 있어요.</div>
 
   <section class="panel" id="bookPanel" hidden>
-    <div class="step">1. 날짜 고르기</div>
+    <div class="step" id="clsStep">반 고르기</div>
+    <div class="classes" id="classes" role="group" aria-label="반"></div>
+    <p class="cls-meta" id="clsMeta" hidden></p>
+    <div class="step">날짜 고르기</div>
     <div class="days" id="days" role="group" aria-label="상담 날짜"></div>
-    <div class="step">2. 시간 고르기</div>
+    <div class="step">시간 고르기</div>
     <div class="times" id="times" role="group" aria-label="상담 시간"></div>
-    <div class="step">3. 신청 내용</div>
+    <div class="step">신청 내용</div>
     <div class="picked empty" id="picked">날짜와 시간을 먼저 골라 주세요.</div>
     <form id="form" novalidate>
       <div style="display:grid; gap:12px">
@@ -148,10 +158,14 @@
     </div>
     <p class="meta" id="adminSummary"></p>
     <div class="table-wrap"><table>
-      <thead><tr><th>날짜</th><th>시간</th><th>아이</th><th>보호자</th><th id="thPhone">연락처</th><th>요청사항</th></tr></thead>
+      <thead><tr><th>반</th><th>날짜</th><th>시간</th><th>아이</th><th>보호자</th><th id="thPhone">연락처</th><th>요청사항</th></tr></thead>
       <tbody id="adminRows"></tbody>
     </table></div>
-    <p class="meta">취소·수정은 구글 시트 "예약현황"에서 상태를 "취소"로 바꾸면 돼요. 날짜·시간·반 이름은 "설정"과 "일정" 시트에서 바꿉니다.</p>
+    <div id="missingBox" hidden style="display:grid; gap:8px">
+      <div class="step">아직 신청하지 않은 아이 (명단 기준)</div>
+      <div class="missing" id="missingList"></div>
+    </div>
+    <p class="meta">취소·수정은 구글 시트 "예약현황"에서 상태를 "취소"로 바꾸면 돼요. 반·담임은 "반", 날짜·시간은 "일정", 아이 이름은 "명단" 시트에서 바꿉니다.</p>
   </section>
 
   <footer>
@@ -165,7 +179,7 @@
 </main>
 
 <script>
-  var state = { data: null, date: null, time: null, adminCode: '' };
+  var state = { data: null, cls: null, date: null, time: null, adminCode: '', wantCls: null };
   var $ = function (id) { return document.getElementById(id); };
 
   function call(fn) {
@@ -185,38 +199,78 @@
       state.data = d;
       document.title = d.title;
       $('title').textContent = d.title;
-      $('className').textContent = d.className;
-      $('className').hidden = !d.className;
-      var meta = [];
-      if (d.teacher) meta.push('담임 ' + d.teacher);
-      if (d.minutes) meta.push('상담 ' + d.minutes + '분');
-      $('meta').textContent = meta.join(' · ');
-      $('meta').hidden = !meta.length;
+      $('meta').hidden = true;
       $('notice').textContent = d.notice;
       $('notice').hidden = !d.notice;
       $('phoneLabel').hidden = !d.askPhone;
       $('closed').hidden = d.open;
       $('bookPanel').hidden = !d.open || !$('donePanel').hidden;
 
-      var stillThere = d.days.some(function (x) { return x.date === state.date; });
-      if (!stillThere) { state.date = (d.days.filter(function (x) { return x.left > 0; })[0] || {}).date || null; state.time = null; }
+      if (state.wantCls) {
+        var want = state.wantCls.replace(/\s+/g, '');
+        d.classes.forEach(function (c) { if (c.name.replace(/\s+/g, '') === want) state.cls = c.name; });
+        state.wantCls = null;
+      }
+      if (!d.classes.some(function (c) { return c.name === state.cls; })) {
+        state.cls = d.classes.length === 1 ? d.classes[0].name : null;
+      }
+      pickDefaultDate();
       render();
     }).catch(function (e) {
       $('meta').textContent = e.message;
     });
   }
 
+  function currentClass() {
+    return state.data.classes.filter(function (c) { return c.name === state.cls; })[0] || null;
+  }
+
+  function pickDefaultDate() {
+    var k = currentClass();
+    var days = k ? k.days : [];
+    if (!days.some(function (x) { return x.date === state.date; })) {
+      state.date = (days.filter(function (x) { return x.left > 0; })[0] || {}).date || null;
+      state.time = null;
+    }
+  }
+
   function render() {
     var d = state.data;
+    var k = currentClass();
+
+    var classes = $('classes');
+    classes.textContent = '';
+    var multi = d.classes.length > 1;
+    $('clsStep').hidden = !multi;
+    classes.hidden = !multi;
+    d.classes.forEach(function (c) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'cls';
+      b.textContent = c.name;
+      b.setAttribute('aria-pressed', String(c.name === state.cls));
+      b.onclick = function () { state.cls = c.name; state.date = null; pickDefaultDate(); render(); };
+      classes.appendChild(b);
+    });
+    var meta = [];
+    if (k && !multi) meta.push(k.name);
+    if (k && k.teacher) meta.push('담임 ' + k.teacher);
+    if (k && k.minutes) meta.push('상담 ' + k.minutes + '분');
+    $('clsMeta').textContent = meta.join(' · ');
+    $('clsMeta').hidden = !meta.length;
+
     var days = $('days');
     days.textContent = '';
-    if (!d.days.length) {
+    var list = k ? k.days : [];
+    if (!list.length) {
       var p = document.createElement('p');
       p.className = 'empty-note';
-      p.textContent = '아직 열린 상담 일정이 없어요. 선생님이 일정을 올리면 여기에 보여요.';
+      p.textContent = !d.classes.length ? '아직 열린 반이 없어요.'
+        : !k ? '먼저 우리 아이 반을 골라 주세요.'
+        : '아직 열린 상담 일정이 없어요. 선생님이 일정을 올리면 여기에 보여요.';
       days.appendChild(p);
     }
-    d.days.forEach(function (day) {
+    list.forEach(function (day) {
       var b = document.createElement('button');
       b.type = 'button';
       b.className = 'day';
@@ -232,7 +286,7 @@
 
     var times = $('times');
     times.textContent = '';
-    var day = d.days.filter(function (x) { return x.date === state.date; })[0];
+    var day = list.filter(function (x) { return x.date === state.date; })[0];
     if (day) {
       day.times.forEach(function (t) {
         var b = document.createElement('button');
@@ -252,7 +306,7 @@
     var picked = $('picked');
     if (day && state.time) {
       picked.className = 'picked';
-      picked.textContent = day.label + ' ' + state.time + (d.minutes ? ' (' + d.minutes + '분)' : '');
+      picked.textContent = (multi ? k.name + ' · ' : '') + day.label + ' ' + state.time + (k.minutes ? ' (' + k.minutes + '분)' : '');
     } else {
       picked.className = 'picked empty';
       picked.textContent = '날짜와 시간을 먼저 골라 주세요.';
@@ -267,11 +321,11 @@
     btn.disabled = true;
     btn.textContent = '신청하는 중…';
     call('book', {
-      date: state.date, time: state.time,
+      cls: state.cls, date: state.date, time: state.time,
       child: $('child').value, guardian: $('guardian').value,
       phone: $('phone').value, memo: $('memo').value
     }).then(function (res) {
-      $('doneWhen').textContent = res.label + ' ' + res.time;
+      $('doneWhen').textContent = res.child + ' · ' + res.cls + ' · ' + res.label + ' ' + res.time;
       $('doneCode').textContent = res.code;
       $('bookPanel').hidden = true;
       $('donePanel').hidden = false;
@@ -305,7 +359,7 @@
       box.textContent = '';
       var p = document.createElement('div');
       p.className = 'picked';
-      p.textContent = b.child + ' · ' + b.label + ' ' + b.time;
+      p.textContent = b.child + ' · ' + b.cls + ' · ' + b.label + ' ' + b.time;
       var c = document.createElement('button');
       c.type = 'button';
       c.className = 'ghost';
@@ -335,7 +389,7 @@
     call('getAdminData', state.adminCode).then(function (a) {
       $('adminLogin').hidden = true;
       $('adminPanel').hidden = false;
-      $('adminSummary').textContent = '신청 ' + a.list.length + '건 · 남은 일정 ' + a.upcomingSlots + '칸 중';
+      $('adminSummary').textContent = a.scope + ' · 신청 ' + a.list.length + '건 / 남은 일정 ' + a.slots + '칸';
       var showPhone = state.data && state.data.askPhone;
       $('thPhone').hidden = !showPhone;
       var tb = $('adminRows');
@@ -343,7 +397,7 @@
       if (!a.list.length) {
         var tr0 = document.createElement('tr');
         var td0 = document.createElement('td');
-        td0.colSpan = 6;
+        td0.colSpan = 7;
         td0.className = 'empty-note';
         td0.textContent = '아직 신청이 없어요.';
         tr0.appendChild(td0);
@@ -351,7 +405,7 @@
       }
       a.list.forEach(function (r) {
         var tr = document.createElement('tr');
-        [[r.label, 'num'], [r.time, 'num'], [r.child], [r.guardian], [r.phone, 'num', !showPhone], [r.memo]].forEach(function (c) {
+        [[r.cls], [r.label, 'num'], [r.time, 'num'], [r.child], [r.guardian], [r.phone, 'num', !showPhone], [r.memo]].forEach(function (c) {
           var td = document.createElement('td');
           td.textContent = c[0] || '';
           if (c[1]) td.className = c[1];
@@ -360,12 +414,30 @@
         });
         tb.appendChild(tr);
       });
+      var ml = $('missingList');
+      ml.textContent = '';
+      a.missing.forEach(function (m) {
+        var s = document.createElement('span');
+        s.textContent = (a.scope === '전체 반' ? m.cls + ' ' : '') + m.child;
+        ml.appendChild(s);
+      });
+      $('missingBox').hidden = !a.missing.length;
       $('adminPanel').scrollIntoView({ behavior: 'smooth' });
     }).catch(function (e) { showErr($('adminErr'), e.message); });
   }
 
+  function start() {
+    try {
+      google.script.url.getLocation(function (loc) {
+        var p = (loc && loc.parameter) || {};
+        state.wantCls = p['반'] || p['class'] || null;
+        load();
+      });
+    } catch (e) { load(); }
+  }
+
   document.addEventListener('visibilitychange', function () { if (!document.hidden && state.data) load(); });
-  load();
+  start();
 </script>
 </body>
 </html>
